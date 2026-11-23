@@ -83,7 +83,7 @@ recorded under another lib first).
 
 ## Repo
 
-- `git init` done; no remote yet.
+- `git init` done; remote: https://github.com/squareSphere29/Enveda-CASMI-2026
 - Remotes: do not push the `data/` folder.
 - Commit (next step): `.gitignore`, `handoff.md`, `README.md`, `scripts/`, notebook.
 
