@@ -25,5 +25,5 @@ for key in keys:
         if sum(1 for k in keys if k != key) > 3:
             break
 print("sample queries ok?")
-rec = pl.collect_records(ctx, {k: queries[k] for k in keys[:5]}, verbose=False)
-print("records for 5 queries:", len(rec))
+rec, report = pl.collect_records(ctx, {k: queries[k] for k in keys[:5]}, verbose=False)
+print("records for 5 queries:", len(rec), report)

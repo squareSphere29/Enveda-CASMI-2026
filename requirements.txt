@@ -1,0 +1,6 @@
+pandas
+numpy
+lightgbm
+rdkit==2026.03.3
+scikit-learn
+pyarrow

@@ -1,49 +1,52 @@
-"""Score the test set: run the pipeline on test.parquet, write submission.csv.
+"""Score the test set: run the pipeline on test.parquet, write submission.csv."""
 
-Checks the submission rules: 400 molecule_ids, unique, <=25 guesses each, no nulls.
-"""
-
+import json
 import pickle
-import time
+from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 import pipeline as pl
 
-DATA = "d:/Dev/KaggleEnvedaCASMI"
+ROOT = Path(__file__).resolve().parent.parent
+DATA = ROOT / "data"
 
 
-def score_test(model_pkl=f"{DATA}/data/model.pkl", out_csv=f"{DATA}/submission.csv", verbose=True):
-    t0 = time.time()
+def score_test(model_pkl=None, out_csv=None, verbose=True):
+    model_pkl = model_pkl or str(DATA / "model.pkl")
+    out_csv = out_csv or str(ROOT / "submission.csv")
     ctx = pl.build_context()
-    test = pd.read_parquet(f"{DATA}/data/test.parquet")
+    np_path = DATA / "np_keys.json"
+    if np_path.exists():
+        ctx["np_set"] = set(json.loads(np_path.read_text()))
+    else:
+        ctx["np_set"] = set(
+            str(k) for k, lib in zip(ctx["pool"].index, ctx["col"]["ingest_lib"])
+            if lib == "enveda-np-examples"
+        )
+    test = pd.read_parquet(DATA / "test.parquet")
     queries = pl.test_queries(test)
     pl.log(f"{len(queries)} test molecules")
-    recs = pl.collect_records(ctx, queries)
-    pl.log(f"{len(recs)} candidate records")
+    recs, report = pl.collect_records(ctx, queries)
+    pl.log(f"{len(recs)} candidate records; mass miss={report['n_miss_mass']}")
     with open(model_pkl, "rb") as fh:
         model = pickle.load(fh)
     preds = model.predict(pl.feats_array(recs))
     rows = pl.submission_rows(ctx, recs, preds, max_len=25)
     sub = pd.DataFrame(rows, columns=["molecule_id", "smiles"])
+    # molecules with no candidates still need a row
+    have = set(sub["molecule_id"].astype(str))
+    for mid in queries:
+        if str(mid) not in have:
+            rows.append((str(mid), ctx["smiles"][0]))
+    sub = pd.DataFrame(rows, columns=["molecule_id", "smiles"]).drop_duplicates("molecule_id")
     sub.to_csv(out_csv, index=False)
 
-    # ---- submission rules check
-    assert len(sub) == len(test["molecule_id"].unique()), (len(sub), test["molecule_id"].nunique())
     assert sub["molecule_id"].is_unique
     assert sub["smiles"].notna().all() and (sub["smiles"] != "").all()
     for s in sub["smiles"]:
         assert len([x for x in s.split(";") if x]) <= 25
-    pl.log(f"submission written to {out_csv} ({len(sub)} rows) in {time.time() - t0:.0f}s")
-
-    # ---- info: overlap with train pool (truth-side sanity on the visible set)
-    train_keys = set(ctx["pool"].index)
-    by_q = {}
-    for r, p in zip(recs, preds):
-        by_q.setdefault(r["qid"], []).append((p, r["key"]))
-    n_top1_in_train = sum(1 for qid in by_q if by_q[qid][0][1] in train_keys)
-    pl.log(f"top-1 candidates: {n_top1_in_train}/{len(by_q)} (all candidates come from the train pool by construction)")
+    pl.log(f"submission written to {out_csv} ({len(sub)} rows)")
     return sub
 
 

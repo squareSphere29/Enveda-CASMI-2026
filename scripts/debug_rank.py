@@ -16,7 +16,7 @@ tr = pd.read_parquet("d:/Dev/KaggleEnvedaCASMI/data/train.parquet")
 queries = pl.train_queries(tr, ctx)
 del tr
 
-recs = pl.collect_records(ctx, {k: queries[k] for k in list(queries)[:400]}, verbose=False)
+recs, _report = pl.collect_records(ctx, {k: queries[k] for k in list(queries)[:400]}, verbose=False)
 X = pl.feats_array(recs)
 preds = model.predict(X)
 from collections import defaultdict

@@ -57,9 +57,8 @@ Method summary (the user asks are all covered below):
 1. **Dedup on the metric key**: pool = train molecules deduplicated on `inchikey14`
    (the metric key: first 14 chars of the InChIKey of the tautomer-canonicalized
    molecule; verified against the column, see cell below).
-2. **Tight mass matching**: adduct-adjusted windows, centered on the observed
-   offset (`(precursor - neutral)/neutral` in ppm, per-adduct offsets + tolerances
-   calibrated from train), with multiple adduct hypotheses.
+2. **Tight mass matching**: adduct-adjusted Da windows, centered on the observed
+   shift, same-mode monomer hypotheses, candidates deduped on `inchikey14`.
 3. **Evidence channels blended**: spectral cosine, fingerprint (FP-net analog)
    match, in-silico fragment coverage, popularity, and natural-product /
    documentation priors; blended by a LightGBM ranker; two-plus public rankers
@@ -87,26 +86,18 @@ unique `inchikey14` values (one SMILES per key).
 
 MASS_MD = """## 2. Mass matching: adduct-adjusted, offset-centered windows
 
-From `train.parquet` we calibrated, per adduct, the physical shift of the observed
-precursor vs the neutral mass (median of `precursor_mz - neutral_mass`: [M+H]+ +1.0076 Da,
-[M-H]- -1.0073 Da, [M+Na]+ 22.989 Da, [M+K]+ 38.963 Da, [M+NH4]+ 18.034 Da,
-[M+Cl]- 34.969 Da, the standard adduct masses) and the per-molecule tolerance
-(0.999 quantile of the molecule-level deviation + 0.5 Da, capped at 3 Da). The window on
-the neutral mass is `|precursor - m - shift(adduct)| <= tol(adduct)`. We try the query
-adduct first and then other adducts of the same ionization mode, deduplicating
-candidates by `inchokey14`.
+Per adduct, shift is the median of `precursor_mz - neutral_mass` on rows of that
+adduct only. Tolerance is the 0.995 quantile of absolute residual, floored at
+0.005 Da and capped at 0.05 Da. Extra hypotheses are same-mode monomers, not
+dimers. `mass_ppm` is `(precursor - mass - shift) / mass * 1e6`.
 """
 
 VALID_MD = """## 3. Local validation
 
-- **Identity-disjoint 5-fold CV over train**: folds are random 5-way splits of
-  the pool by `inchikey14` (the scored identity; the same idea as the
-  CASMI26 "CASMI26 Identity-Disjoint Validation Folds" dataset). For each fold
-  we collect candidate records for the fold molecules, fit the blend on the
-  other folds, and score the fold with MRR (reciprocal rank of the truth in the
-  top 25).
-- **Natural-product panel benchmark**: MRR over the `enveda-np-examples`
-  molecules (250 common natural products, the closest library to the test set).
+The query is one held-out train spectrum. Cosine against the true key uses the
+other rows of that molecule, not the concatenated library that still contains
+the query peaks. Empty mass windows score 0. The np panel is held out of the
+ranker training set.
 """
 
 TEST_MD = """## 4. Test scoring
@@ -153,11 +144,11 @@ confirm_metric_key()
 
 SHOW_ADDUCT_CELL = '''
 def show_adduct_stats():
-    stats = json.load(open("d:/Dev/KaggleEnvedaCASMI/data/adduct_offsets.json"))
+    stats = json.load(open("data/adduct_offsets.json"))
     rows = sorted(
-        ((a, v["offset_ppm"], v["tol_ppm"], v["n"]) for a, v in stats.items() if not a.startswith("__")),
+        ((a, v["shift_da"], v["tol_da"], v["n"]) for a, v in stats.items() if not a.startswith("__")),
         key=lambda r: -r[3])
-    print(pd.DataFrame(rows, columns=["adduct", "offset_ppm (systematic)", "tol_ppm", "n_train"]).to_string(index=False))
+    print(pd.DataFrame(rows, columns=["adduct", "shift_da", "tol_da", "n_train"]).to_string(index=False))
 
 
 show_adduct_stats()

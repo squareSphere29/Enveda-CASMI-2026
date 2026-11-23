@@ -1,9 +1,8 @@
 """Report the final blend model's feature importances (from data/model.pkl)."""
 import pickle
+from pathlib import Path
 
-import pipeline as pl
-
-model = pickle.load(open("d:/Dev/KaggleEnvedaCASMI/data/model.pkl", "rb"))
+model = pickle.load(open(Path(__file__).resolve().parent.parent / "data" / "model.pkl", "rb"))
 try:
     booster = model.booster_
     names = booster.feature_name()

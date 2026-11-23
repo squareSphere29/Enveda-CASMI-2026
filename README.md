@@ -9,9 +9,8 @@ predict up to 25 ranked SMILES guesses per molecule from `test.parquet`.
 1. **Dedup on the metric key.** Candidate pool = `train.parquet` deduplicated on
    `inchikey14` (the metric key: first 14 chars of the InChIKey of the
    tautomer-canonicalized molecule).
-2. **Mass matching.** Per-adduct observed offsets and tolerances calibrated from
-   `train.parquet`; the acceptance window on the neutral mass is centered on the
-   observed offset, with multiple adduct hypotheses (`scripts/pipeline.py:mass_candidates`).
+2. **Mass matching.** Per-adduct Da shift and a 0.005–0.05 Da window, same-mode
+   monomer hypotheses (`scripts/pipeline.py:mass_candidates`).
 3. **Evidence channels.** Spectral cosine (query vs the molecule's library
    spectra), Morgan-FP Tanimoto to the spectral winner, in-silico fragment
    coverage, popularity, and natural-product / documentation priors. Blended by a
@@ -22,9 +21,8 @@ predict up to 25 ranked SMILES guesses per molecule from `test.parquet`.
    with POP/SPEC/NP priors + `LIB_HIT_GATE = 0.78` (flexonafft
    `casmi26-anchored-spectral-network`), and the haideptry starter (candidate
    retrieval + rerank across four channels).
-5. **Local validation.** Identity-disjoint 5-fold CV over train (folds by
-   `inchikey14`) plus the natural-product panel benchmark
-   (`enveda-np-examples`, the closest library to the test set).
+5. **Local validation.** Held-out train spectrum per molecule, identity-disjoint
+   5-fold CV on 200 keys, held-out `enveda-np-examples` panel. Empty retrievals score 0.
 6. **Output.** `submission.csv` (columns `molecule_id`, `smiles`; up to 25 guesses
    semicolon-separated).
 

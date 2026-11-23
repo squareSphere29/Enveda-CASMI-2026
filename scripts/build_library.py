@@ -13,13 +13,14 @@ import json
 import re
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator, rdMolDescriptors
 
-DATA = "d:/Dev/KaggleEnvedaCASMI/data"
+DATA = str(Path(__file__).resolve().parent.parent / "data")
 FP_SIZE = 2048
 T0 = time.time()
 
@@ -111,26 +112,25 @@ def build_pool():
     assert len(lib_offsets) == len(pool) + 1
     log(f"total library points: {len(lib_mz)} ({len(lib_mz) / len(pool):.0f}/molecule avg)")
 
-    log("adduct offsets/tolerances from train")
-    mass_of = pool["mass"].to_numpy()
-    key_to_pos = {k: i for i, k in enumerate(pool.index)}
-    pos = tr["inchikey14"].map(key_to_pos).to_numpy()
-    m = mass_of[pos]
-    ppm = (tr["precursor_mz"].to_numpy() - m) / m * 1e6
-    mask = np.isfinite(ppm) & (np.abs(ppm) < 100)
+    log("adduct offsets/tolerances from train (per-adduct Da, tight cap)")
+    mass_of = pool["mass"]
+    d_da = tr["precursor_mz"].to_numpy() - tr["inchikey14"].map(mass_of).to_numpy()
     adduct_stats = {}
+    adducts = tr["adduct"].to_numpy()
     for a in tr["adduct"].unique():
         a = str(a)
-        e = ppm[mask & (tr["adduct"].to_numpy() == a)]
+        e = d_da[adducts == a]
+        e = e[np.isfinite(e)]
         if len(e) == 0:
             continue
-        off = float(np.median(e))
-        tol = float(np.quantile(np.abs(e - off), 0.999)) + 1.0
-        adduct_stats[a] = {"offset_ppm": off, "tol_ppm": tol, "n": int(len(e))}
-    e = ppm[mask]
+        shift = float(np.median(e))
+        q = float(np.quantile(np.abs(e - shift), 0.995))
+        tol = float(min(max(q, 0.005), 0.05))
+        adduct_stats[a] = {"shift_da": shift, "tol_da": tol, "n": int(len(e))}
+    e = d_da[np.isfinite(d_da)]
     adduct_stats["__default__"] = {
-        "offset_ppm": float(np.median(e)),
-        "tol_ppm": float(np.quantile(np.abs(e), 0.999)) + 1.0,
+        "shift_da": float(np.median(e)),
+        "tol_da": 0.02,
         "n": int(len(e)),
     }
 
@@ -146,7 +146,7 @@ def build_pool():
 
     log(f"pool: {len(pool)} molecules; mass range {float(np.nanmin(pool.mass)):.1f} to {float(np.nanmax(pool.mass)):.1f}")
     for k in sorted(adduct_stats, key=lambda k: -adduct_stats[k]["n"])[:8]:
-        log(f"  {k}: n={adduct_stats[k]['n']}, offset={adduct_stats[k]['offset_ppm']:.2f} ppm, tol={adduct_stats[k]['tol_ppm']:.2f} ppm")
+        log(f"  {k}: n={adduct_stats[k]['n']}, shift={adduct_stats[k]['shift_da']:.4f} Da, tol={adduct_stats[k]['tol_da']:.4f} Da")
 
 
 if __name__ == "__main__":

@@ -12,8 +12,10 @@ Channels per candidate (used by the public rankers and the LightGBM ranker):
 """
 
 import json
+import sys
 import time
 from collections import defaultdict
+from pathlib import Path
 
 import lightgbm as lgb
 import numpy as np
@@ -21,9 +23,21 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator, rdMolDescriptors
 
-DATA = "d:/Dev/KaggleEnvedaCASMI/data"
+ROOT = Path(__file__).resolve().parent.parent
+VENDOR_SRC = ROOT / "vendor" / "haideptry-casmi26" / "src"
+if str(VENDOR_SRC) not in sys.path:
+    sys.path.insert(0, str(VENDOR_SRC))
+from casmi.fork.core import ADDUCTS, CFG, neutral_mass
+from casmi.metric import key14
+
+DATA = str(ROOT / "data")
 FP_SIZE = 2048
 PROTON = 1.007276
+# Same-mode monomer hypotheses from the public haideptry/prvsiyan adduct table.
+POS_HYPS = tuple(a for a, (n, z, _d) in ADDUCTS.items()
+                 if n == 1 and z == 1 and str(a).endswith("+") and "]2+" not in str(a))
+NEG_HYPS = tuple(a for a, (n, z, _d) in ADDUCTS.items()
+                 if n == 1 and str(a).endswith("-"))
 
 COLS = ["mass", "n_rows", "doc_prior", "ingest_lib", "n_rings", "n_arom_atoms", "n_N",
         "n_O", "n_S", "n_hal", "n_hetero", "n_heavy", "n_double_bonds", "n_rot", "DBE"]
@@ -209,25 +223,54 @@ def fp_tanimoto(b1, b2):
 
 # ==== mass matching
 
-def mass_candidates(ctx, prec, adduct, ionization_mode, max_hyps=4):
-    """Candidates whose observed precursor falls in the adduct-adjusted window:
-    |prec - m - shift[a]| <= tol[a] (shift/tol calibrated from train). Returns
-    {key: (key, mass, dev, hyp, mass_ppm)}."""
-    mass, keys = ctx["mass_v"], ctx["keys_v"]
-    stats = ctx["adduct_stats"]
+def _adduct_mode(adduct):
+    a = str(adduct)
+    if a.endswith("-") or a.endswith("]-"):
+        return "negative"
+    if "+" in a:
+        return "positive"
+    return ""
+
+
+def _tol_da(st, prec):
+    if st.get("tol_ppm") is not None:
+        return max(float(prec) * float(st["tol_ppm"]) / 1e6, 0.005)
+    return max(min(float(st.get("tol_da", 0.02)), 0.05), 0.005)
+
+
+def _hypotheses(stats, adduct, ionization_mode, max_hyps):
     hyps = []
-    if adduct in stats:
+    if adduct in ADDUCTS:
         hyps.append(adduct)
-    for a in sorted((a for a in stats if not a.startswith("__") and a != adduct),
-                    key=lambda a: -stats[a].get("n", 0)):
-        hyps.append(a)
+    mode = ionization_mode if ionization_mode in ("positive", "negative") else _adduct_mode(adduct)
+    pool = POS_HYPS if mode == "positive" else NEG_HYPS if mode == "negative" else ()
+    for a in pool:
+        if a != adduct:
+            hyps.append(a)
     if not hyps:
         hyps = [adduct]
+    return hyps[:max_hyps]
+
+
+def _neutral(prec, adduct):
+    return float(neutral_mass(np.array([prec], dtype=np.float64),
+                              np.array([adduct], dtype=object))[0])
+
+
+def mass_candidates(ctx, prec, adduct, ionization_mode, max_hyps=4):
+    """Public 8.5 ppm window on adduct-corrected neutral mass (haideptry CFG.PPM_WIN).
+    Extra hypotheses are same-mode monomers from the public ADDUCTS table.
+    Fallback is CFG.PPM_FALLBACK (30 ppm)."""
+    mass, keys = ctx["mass_v"], ctx["keys_v"]
+    stats = ctx["adduct_stats"]
+    hyps = _hypotheses(stats, adduct, ionization_mode, max_hyps)
     out = {}
-    for a in hyps[:max_hyps]:
-        st = stats.get(a, stats.get("__default__", {"shift_da": 0.0, "tol_da": 3.0}))
-        shift, tol = st["shift_da"], max(0.05, st["tol_da"])
-        target = prec - shift
+    ppm_win = float(CFG.PPM_WIN)
+
+    def _absorb(target, a, ppm_lim):
+        if not np.isfinite(target) or abs(target) < 1e-6:
+            return
+        tol = abs(target) * ppm_lim / 1e6
         i0 = np.searchsorted(mass, target - tol, side="left")
         i1 = np.searchsorted(mass, target + tol, side="left")
         for j in range(i0, i1):
@@ -235,20 +278,16 @@ def mass_candidates(ctx, prec, adduct, ionization_mode, max_hyps=4):
             m = mass[j]
             if not np.isfinite(m):
                 continue
-            dev = prec - m - shift
+            dev = m - target
+            ppm = dev / target * 1e6
             prev = out.get(key)
             if prev is None or abs(dev) < abs(prev[2]):
-                out[key] = (key, m, dev, a, (prec - m) / m * 1e6)
+                out[key] = (key, m, dev, a, ppm)
+
+    for a in hyps:
+        _absorb(_neutral(prec, a), a, ppm_win)
     if not out:
-        # fallback: relax around the adduct-adjusted precursor
-        st = stats.get(adduct, stats.get("__default__", {"shift_da": 0.0, "tol_da": 3.0}))
-        target = prec - st["shift_da"]
-        near = np.where(np.abs(mass - target) <= max(st["tol_da"], 0.05) * 10)[0]
-        if len(near):
-            for j in near[np.argsort(np.abs(mass[near] - target))[:5]]:
-                m = mass[j]
-                out[keys[j]] = (keys[j], m, prec - m - st["shift_da"], adduct,
-                                 (prec - m) / m * 1e6)
+        _absorb(_neutral(prec, adduct), adduct, float(CFG.PPM_FALLBACK))
     return out
 
 
@@ -351,62 +390,92 @@ def cand_features(ctx, cand, proxy_key, top5_keys):
     return f
 
 
-def collect_records(ctx, queries, max_cands=25, verbose=True):
-    """For each query molecule: mass candidates, evidence channels, public ranker
-    lists, and a feature row. Returns list of records:
-    {qid, key, label, feats} (one per candidate)."""
+def collect_records(ctx, queries, max_cands=100, verbose=True, drop_query_key=False):
+    """For each query: mass candidates, evidence channels, public ranker
+    lists, and a feature row. Returns (records, report).
+    records: {qid, key, label, feats} per candidate (up to max_cands, by cosine).
+    report: n_queries, n_miss_mass, recall_at_max (truth in the cosine shortlist)."""
     records = []
+    n_miss_mass = 0
+    n_hit = 0
     for qi, (qid, q) in enumerate(sorted(queries.items(), key=lambda kv: str(kv[0]))):
         cands = mass_candidates(ctx, q["prec"], q["adduct"], q["ionization_mode"])
+        if drop_query_key:
+            cands = {k: v for k, v in cands.items() if str(k) != str(qid)}
         if not cands:
+            n_miss_mass += 1
             continue
         cand_list = []
         for idx, (key, (k, m, err, hyp, ppm)) in enumerate(sorted(cands.items(), key=lambda kv: str(kv[0]))):
-            lm, li = spec_segment(ctx, key)
+            if str(key) == str(qid) and "truth_lib_mz" in q:
+                lm, li = q["truth_lib_mz"], q["truth_lib_int"]
+            else:
+                lm, li = spec_segment(ctx, key)
             sc = spec_cos(q["q_mz"], q["q_int"], lm, li)
             cand_list.append({"key": key, "mass": m, "mass_ppm": ppm, "err": err,
                               "hyp": hyp, "mass_match": 1.0, "spec_cos": sc, "idx": idx})
         if not cand_list:
+            n_miss_mass += 1
             continue
-        cand_list.sort(key=lambda c: (-c["spec_cos"], c["key"]))
-        proxy_key = cand_list[0]["key"]
-        top5_keys = [c["key"] for c in cand_list[:5]]
+        cand_list.sort(key=lambda c: (-c["spec_cos"], str(c["key"])))
+        short = cand_list[:max_cands]
+        if any(str(c["key"]) == str(qid) for c in short):
+            n_hit += 1
+        proxy_key = short[0]["key"]
+        top5_keys = [c["key"] for c in short[:5]]
         fp_map = ctx["fp_map"]
-        for c in cand_list:
+        for c in short:
             pos = ctx["pos_of_key"][c["key"]]
             c["row"] = {name: ctx["col"][name][pos] for name in COLS}
             c["fp_match"] = fp_tanimoto(fp_map[c["key"]], fp_map[proxy_key])
             c["fp_mean_top5"] = float(np.mean([fp_tanimoto(fp_map[c["key"]], fp_map[t]) for t in top5_keys]))
             c["in_silico"] = (in_silico(ctx, c["key"], q["q_mz"], q["ionization_mode"])
                               if c["spec_cos"] >= 0.3 else 0.0)
-        v8 = ranker_v8(cand_list)
-        anchored = ranker_anchored(ctx, cand_list)
-        hai = ranker_haideptry(ctx, cand_list)
-        for c in cand_list:
+        v8 = ranker_v8(short)
+        anchored = ranker_anchored(ctx, short)
+        hai = ranker_haideptry(ctx, short)
+        for c in short:
             c["public"] = {"v8": v8[c["key"]], "anchored": anchored[c["key"]],
                            "haideptry": hai[c["key"]]}
-        for c in cand_list[:max_cands]:
+        for c in short:
             records.append({"qid": str(qid), "key": c["key"],
-                            "label": 1.0 if c["key"] == str(qid) else 0.0,
+                            "label": 1.0 if str(c["key"]) == str(qid) else 0.0,
                             "feats": cand_features(ctx, c, proxy_key, top5_keys)})
-        if verbose and qi % 10000 == 0:
+        if verbose and qi % 50 == 0:
             log(f"collect_records: {qi}/{len(queries)} queries, {len(records)} records")
     records.sort(key=lambda r: r["qid"])
-    return records
+    n_q = len(queries)
+    report = {
+        "n_queries": n_q,
+        "n_miss_mass": n_miss_mass,
+        "recall_at_max": float(n_hit / n_q) if n_q else 0.0,
+        "n_with_cands": n_q - n_miss_mass,
+    }
+    if verbose:
+        log(f"collect_records done: miss_mass={n_miss_mass}/{n_q} "
+            f"recall@{max_cands}={report['recall_at_max']:.3f}")
+    return records, report
 
 
 def feats_array(records):
     return np.array([[r["feats"][n] for n in FEATURE_NAMES] for r in records], dtype=np.float64)
 
 
-def mrr(records, preds):
+def mrr(records, preds, expected_qids=None):
     """Mean reciprocal rank of the truth candidate (label 1) within the
-    per-query prediction order."""
+    per-query prediction order. Queries in expected_qids with no records
+    score 0 (empty mass window or truth not in the shortlist)."""
     by_q = defaultdict(list)
     for r, p in zip(records, preds):
         by_q[r["qid"]].append((p, r["label"], r["key"]))
+    qids = list(expected_qids) if expected_qids is not None else list(by_q)
     rr = []
-    for qid, lst in by_q.items():
+    for qid in qids:
+        qid = str(qid)
+        lst = by_q.get(qid)
+        if not lst:
+            rr.append(0.0)
+            continue
         truth = [k for (p, l, k) in lst if l == 1]
         if not truth:
             rr.append(0.0)
@@ -422,12 +491,13 @@ def mrr(records, preds):
 
 
 def make_folds(keys, n_folds=5, seed=42):
-    keys = sorted(map(str, keys))
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(len(keys))
+    """Identity-disjoint folds by md5(inchikey14). seed is unused; kept for callers."""
+    import hashlib
     folds = [set() for _ in range(n_folds)]
-    for i, k in enumerate(perm):
-        folds[i % n_folds].add(keys[k])
+    for k in keys:
+        k = str(k)
+        h = int(hashlib.md5(k.encode("utf-8")).hexdigest(), 16) % n_folds
+        folds[h].add(k)
     return folds
 
 
@@ -451,27 +521,39 @@ def train_final(X, y, qids):
 
 # ==== query tables
 
+def _spectrum_from_rows(sub):
+    if len(sub) == 0:
+        return np.array([], dtype=np.float64), np.array([], dtype=np.float64)
+    q_mz = np.concatenate([np.asarray(a, np.float64) for a in sub.ms2_mzs])
+    q_int = np.concatenate([np.asarray(a, np.float64) for a in sub.ms2_normalized_intensities])
+    o = np.argsort(q_mz, kind="stable")
+    return q_mz[o], q_int[o]
+
+
 def train_queries(train_df, ctx):
-    """Per molecule key: query spectrum (merged train rows), median precursor,
-    adduct of the median-precursor row, first ionization mode."""
+    """One held-out train spectrum per molecule (the row nearest the median
+    precursor). The remaining rows of that molecule are the truth library
+    used when scoring the true key, so cosine is not a self-match against
+    the concatenated library that still contains the query peaks."""
     key_col = next(c for c in train_df.columns if "key14" in c)
-    g = train_df.groupby(key_col)
-    prec_map = g["precursor_mz"].median()
-    mode_map = g["ionization_mode"].first()
-
-    def med_adduct(d):
-        i = d["precursor_mz"].sub(np.median(d["precursor_mz"])).abs().idxmin()
-        return str(d.at[i, "adduct"])
-
-    adduct_map = g.apply(med_adduct, include_groups=False)
     queries = {}
-    for key in ctx["pool"].index:
-        if key not in prec_map.index:
+    pos = ctx["pos_of_key"]
+    for key, sub in train_df.groupby(key_col, sort=False):
+        if key not in pos:
             continue
-        lm, li = spec_segment(ctx, key)
+        med = float(sub["precursor_mz"].median())
+        i = sub["precursor_mz"].sub(med).abs().idxmin()
+        row = sub.loc[i]
+        q_mz = np.asarray(row.ms2_mzs, np.float64)
+        q_int = np.asarray(row.ms2_normalized_intensities, np.float64)
+        o = np.argsort(q_mz, kind="stable")
+        t_mz, t_int = _spectrum_from_rows(sub.drop(index=i))
         queries[str(key)] = {
-            "q_mz": lm, "q_int": li, "prec": float(prec_map[key]),
-            "adduct": str(adduct_map[key]), "ionization_mode": str(mode_map[key]),
+            "q_mz": q_mz[o], "q_int": q_int[o],
+            "prec": float(row["precursor_mz"]),
+            "adduct": str(row["adduct"]),
+            "ionization_mode": str(row["ionization_mode"]),
+            "truth_lib_mz": t_mz, "truth_lib_int": t_int,
         }
     return queries
 

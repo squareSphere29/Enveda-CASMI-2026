@@ -9,3 +9,16 @@ data/
 
 # Generated during the run
 submission.csv
+
+# Local agent / session / handoff (do not push)
+handoff.md
+session.md
+agent.md
+AGENT.md
+SESSION.md
+HANDOFF.md
+*.handoff.md
+logs/
+
+# Nested clone metadata if restored locally
+vendor/**/.git.bak/
