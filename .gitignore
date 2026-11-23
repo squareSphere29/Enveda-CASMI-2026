@@ -1,0 +1,10 @@
+# Python caches and dev logs
+__pycache__/
+*.pyc
+logs/
+
+# Competition data (on disk; not pushed)
+data/
+
+# Generated during the run
+submission.csv
