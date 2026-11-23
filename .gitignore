@@ -1,6 +1,7 @@
 # Python caches and dev logs
 __pycache__/
 *.pyc
+*.cursor
 logs/
 
 # Competition data (on disk; not pushed)
