@@ -2,7 +2,7 @@
 import pipeline as pl
 
 ctx = pl.build_context()
-off = ctx["adduct_stats"]["[M+H]+"]["offset_ppm"]
+off = ctx["adduct_stats"]["[M+H]+"]["shift_da"]
 queries = {}
 for key in list(ctx["pool"].index)[:5]:
     pos = ctx["pos_of_key"][key]

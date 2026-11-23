@@ -210,8 +210,9 @@ def fp_tanimoto(b1, b2):
 # ==== mass matching
 
 def mass_candidates(ctx, prec, adduct, ionization_mode, max_hyps=4):
-    """Candidates whose observed precursor-to-neutral ppm falls in the calibrated
-    adduct window (centered on the observed offset). Returns {key: (key, mass, err, hyp, mass_ppm)}."""
+    """Candidates whose observed precursor falls in the adduct-adjusted window:
+    |prec - m - shift[a]| <= tol[a] (shift/tol calibrated from train). Returns
+    {key: (key, mass, dev, hyp, mass_ppm)}."""
     mass, keys = ctx["mass_v"], ctx["keys_v"]
     stats = ctx["adduct_stats"]
     hyps = []
@@ -224,37 +225,32 @@ def mass_candidates(ctx, prec, adduct, ionization_mode, max_hyps=4):
         hyps = [adduct]
     out = {}
     for a in hyps[:max_hyps]:
-        st = stats.get(a, stats.get("__default__", {"offset_ppm": 0.0, "tol_ppm": 5.0}))
-        off, tol = st["offset_ppm"], max(2.0, st["tol_ppm"])
-        # accept: |ppm - off| <= tol with ppm = (prec - m)/m*1e6
-        #  -> m in [prec/(1 + (off+tol)/1e6), prec/(1 + (off-tol)/1e6)]
-        lo, hi = prec / (1 + (off + tol) / 1e6), prec / (1 + (off - tol) / 1e6)
-        i0 = np.searchsorted(mass, lo, side="left")
-        i1 = np.searchsorted(mass, hi, side="left")
+        st = stats.get(a, stats.get("__default__", {"shift_da": 0.0, "tol_da": 3.0}))
+        shift, tol = st["shift_da"], max(0.05, st["tol_da"])
+        target = prec - shift
+        i0 = np.searchsorted(mass, target - tol, side="left")
+        i1 = np.searchsorted(mass, target + tol, side="left")
         for j in range(i0, i1):
             key = keys[j]
             m = mass[j]
             if not np.isfinite(m):
                 continue
-            ppm = (prec - m) / m * 1e6
-            err = ppm - off
+            dev = prec - m - shift
             prev = out.get(key)
-            if prev is None or abs(err) < abs(prev[3]):
-                out[key] = (key, m, err, a, ppm)
+            if prev is None or abs(dev) < abs(prev[2]):
+                out[key] = (key, m, dev, a, (prec - m) / m * 1e6)
     if not out:
-        # fallback: relax around the observed precursor
-        st = stats.get(adduct, stats.get("__default__", {"offset_ppm": 0.0, "tol_ppm": 5.0}))
-        near = np.where(np.abs(mass - prec) <= prec * 0.005)[0]
+        # fallback: relax around the adduct-adjusted precursor
+        st = stats.get(adduct, stats.get("__default__", {"shift_da": 0.0, "tol_da": 3.0}))
+        target = prec - st["shift_da"]
+        near = np.where(np.abs(mass - target) <= max(st["tol_da"], 0.05) * 10)[0]
         if len(near):
-            for j in near[np.argsort(np.abs(mass[near] - prec))[:5]]:
-                ppm = (prec - mass[j]) / mass[j] * 1e6
-                out[keys[j]] = (keys[j], mass[j], ppm - st["offset_ppm"], adduct, ppm)
+            for j in near[np.argsort(np.abs(mass[near] - target))[:5]]:
+                m = mass[j]
+                out[keys[j]] = (keys[j], m, prec - m - st["shift_da"], adduct,
+                                 (prec - m) / m * 1e6)
     return out
 
-
-# ---------------------------------------------------------------- public rankers
-
-# ==== public rankers
 
 def np_likeness(row):
     v = 0.0

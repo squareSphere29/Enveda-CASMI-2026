@@ -87,12 +87,14 @@ unique `inchikey14` values (one SMILES per key).
 
 MASS_MD = """## 2. Mass matching: adduct-adjusted, offset-centered windows
 
-From `train.parquet` we calibrated, per adduct, the observed offset of
-`(precursor_mz - neutral_mass)/neutral_mass` in ppm and a tolerance (`data/adduct_offsets.json`).
-The mass window is centered on the observed offset: a candidate's neutral mass
-must satisfy `|ppm_obs - offset(adduct)| <= tol(adduct)`. We try the query adduct
-first and then other adducts of the same ionization mode, deduplicating
-candidates by `inchikey14`.
+From `train.parquet` we calibrated, per adduct, the physical shift of the observed
+precursor vs the neutral mass (median of `precursor_mz - neutral_mass`: [M+H]+ +1.0076 Da,
+[M-H]- -1.0073 Da, [M+Na]+ 22.989 Da, [M+K]+ 38.963 Da, [M+NH4]+ 18.034 Da,
+[M+Cl]- 34.969 Da, the standard adduct masses) and the per-molecule tolerance
+(0.999 quantile of the molecule-level deviation + 0.5 Da, capped at 3 Da). The window on
+the neutral mass is `|precursor - m - shift(adduct)| <= tol(adduct)`. We try the query
+adduct first and then other adducts of the same ionization mode, deduplicating
+candidates by `inchokey14`.
 """
 
 VALID_MD = """## 3. Local validation
