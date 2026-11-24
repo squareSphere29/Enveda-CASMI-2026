@@ -1,6 +1,6 @@
 # What the competition scores
 
-The explanation of where MRR moves is [Score levers in the local driver](score-levers.md).
+Meanings of MRR and the three classes are in [About MRR, classes, and the local driver](mrr-and-classes.md). Where MRR moves is [Score levers in the local driver](score-levers.md).
 
 This page describes the scored artifact. Local plots and `run_fork_val.py` numbers are not the artifact.
 

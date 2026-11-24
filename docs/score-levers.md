@@ -1,6 +1,6 @@
 # Score levers in the local driver
 
-The scored file is defined in [What the competition scores](deliverable.md).
+The scored file is defined in [What the competition scores](deliverable.md). Word meanings are in [About MRR, classes, and the local driver](mrr-and-classes.md).
 
 The public pipeline lives in `vendor/haideptry-casmi26/src/casmi/fork/core.py`. `harness.py` stages the same work so you can change one stage and keep the rest. Dated measurements are in `vendor/haideptry-casmi26/docs/plan.md`. This page argues where new points come from. It is not a runbook.
 
