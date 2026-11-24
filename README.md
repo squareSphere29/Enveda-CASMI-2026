@@ -4,7 +4,9 @@ Pipeline for the Kaggle competition [Enveda CASMI 2026 - Molecule ID From Mass
 Spectra](https://www.kaggle.com/competitions/enveda-CASMI26-molecule-id-mass-spectra):
 predict up to 25 ranked SMILES guesses per molecule from `test.parquet`.
 
-## Method (see `CASMI26_solution.ipynb` for details)
+The scored engine is the public 4-channel fork under `vendor/haideptry-casmi26` and `kaggle/casmi26-fork-v4-cpu`. Meanings of MRR and class 1, class 2, and class 3 are in `docs/mrr-and-classes.md`. Analog `scripts/pipeline.py` is a weaker local baseline, not the submit path.
+
+## Method (analog baseline; see `CASMI26_solution.ipynb` for details)
 
 1. **Dedup on the metric key.** Candidate pool = `train.parquet` deduplicated on
    `inchikey14` (the metric key: first 14 chars of the InChIKey of the
